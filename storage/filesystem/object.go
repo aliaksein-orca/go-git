@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
@@ -31,6 +32,7 @@ type ObjectStorage struct {
 	packList    []plumbing.Hash
 	packListIdx int
 	packfiles   map[plumbing.Hash]*packfile.Packfile
+	mut         sync.Mutex
 }
 
 // NewObjectStorage creates a new ObjectStorage with the given .git directory and cache.
@@ -452,6 +454,8 @@ func (s *ObjectStorage) decodeObjectAt(
 	p *packfile.Packfile,
 	offset int64,
 ) (plumbing.EncodedObject, error) {
+		s.mut.Lock()
+		defer s.mut.Unlock()
 	hash, err := p.FindHash(offset)
 	if err == nil {
 		obj, ok := s.objectCache.Get(hash)
@@ -509,6 +513,8 @@ func (s *ObjectStorage) decodeDeltaObjectAt(
 }
 
 func (s *ObjectStorage) findObjectInPackfile(h plumbing.Hash) (plumbing.Hash, plumbing.Hash, int64) {
+	s.mut.Lock()
+	defer s.mut.Unlock()
 	for packfile, index := range s.index {
 		offset, err := index.FindOffset(h)
 		if err == nil {
