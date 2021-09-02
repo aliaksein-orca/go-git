@@ -206,9 +206,9 @@ func (s *ObjectStorage) packfile(idx idxfile.Index, pack plumbing.Hash) (*packfi
 
 	var p *packfile.Packfile
 	if s.objectCache != nil {
-		p = packfile.NewPackfileWithCache(idx, s.dir.Fs(), f, s.objectCache)
+		p = packfile.NewPackfileWithCache(idx, s.dir.Fs(), f, s.objectCache, s.options.LargeObjectThreshold)
 	} else {
-		p = packfile.NewPackfile(idx, s.dir.Fs(), f)
+		p = packfile.NewPackfile(idx, s.dir.Fs(), f, s.options.LargeObjectThreshold)
 	}
 
 	return p, s.storePackfileInCache(pack, p)
@@ -403,9 +403,8 @@ func (s *ObjectStorage) getFromUnpacked(h plumbing.Hash) (obj plumbing.EncodedOb
 		return nil, err
 	}
 
-	if size > packfile.LargeObjectThreshold {
+	if s.options.LargeObjectThreshold > 0 && size > s.options.LargeObjectThreshold {
 		obj = dotgit.NewEncodedObject(s.dir, h, t, size)
-		s.objectCache.Put(obj)
 		return obj, nil
 	}
 
@@ -608,6 +607,7 @@ func (s *ObjectStorage) buildPackfileIters(
 			return newPackfileIter(
 				s.dir.Fs(), pack, t, seen, s.index[h],
 				s.objectCache, s.options.KeepDescriptors,
+				s.options.LargeObjectThreshold,
 			)
 		},
 	}, nil
@@ -697,6 +697,7 @@ func NewPackfileIter(
 	idxFile billy.File,
 	t plumbing.ObjectType,
 	keepPack bool,
+	largeObjectThreshold int64,
 ) (storer.EncodedObjectIter, error) {
 	idx := idxfile.NewMemoryIndex()
 	if err := idxfile.NewDecoder(idxFile).Decode(idx); err != nil {
@@ -708,7 +709,7 @@ func NewPackfileIter(
 	}
 
 	seen := make(map[plumbing.Hash]struct{})
-	return newPackfileIter(fs, f, t, seen, idx, nil, keepPack)
+	return newPackfileIter(fs, f, t, seen, idx, nil, keepPack, largeObjectThreshold)
 }
 
 func newPackfileIter(
@@ -719,12 +720,13 @@ func newPackfileIter(
 	index idxfile.Index,
 	cache cache.Object,
 	keepPack bool,
+	largeObjectThreshold int64,
 ) (storer.EncodedObjectIter, error) {
 	var p *packfile.Packfile
 	if cache != nil {
-		p = packfile.NewPackfileWithCache(index, fs, f, cache)
+		p = packfile.NewPackfileWithCache(index, fs, f, cache, largeObjectThreshold)
 	} else {
-		p = packfile.NewPackfile(index, fs, f)
+		p = packfile.NewPackfile(index, fs, f, largeObjectThreshold)
 	}
 
 	iter, err := p.GetByType(t)
