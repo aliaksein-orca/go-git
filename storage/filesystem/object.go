@@ -26,8 +26,9 @@ type ObjectStorage struct {
 	// loaded loose objects
 	objectCache cache.Object
 
-	dir   *dotgit.DotGit
-	index map[plumbing.Hash]idxfile.Index
+	dir      *dotgit.DotGit
+	index    map[plumbing.Hash]idxfile.Index
+	indexMut sync.RWMutex
 
 	packList    []plumbing.Hash
 	packListIdx int
@@ -50,10 +51,15 @@ func NewObjectStorageWithOptions(dir *dotgit.DotGit, objectCache cache.Object, o
 }
 
 func (s *ObjectStorage) requireIndex() error {
+	s.indexMut.RLock()
 	if s.index != nil {
+		s.indexMut.RUnlock()
 		return nil
 	}
+	s.indexMut.RUnlock()
 
+	s.indexMut.Lock()
+	defer s.indexMut.Unlock()
 	s.index = make(map[plumbing.Hash]idxfile.Index)
 	packs, err := s.dir.ObjectPacks()
 	if err != nil {
@@ -71,6 +77,8 @@ func (s *ObjectStorage) requireIndex() error {
 
 // Reindex indexes again all packfiles. Useful if git changed packfiles externally
 func (s *ObjectStorage) Reindex() {
+	s.indexMut.Lock()
+	defer s.indexMut.Unlock()
 	s.index = nil
 }
 
@@ -109,7 +117,9 @@ func (s *ObjectStorage) PackfileWriter() (io.WriteCloser, error) {
 	w.Notify = func(h plumbing.Hash, writer *idxfile.Writer) {
 		index, err := writer.Index()
 		if err == nil {
+			s.indexMut.Lock()
 			s.index[h] = index
+			s.indexMut.Unlock()
 		}
 	}
 
@@ -272,7 +282,9 @@ func (s *ObjectStorage) encodedObjectSizeFromPackfile(h plumbing.Hash) (
 		return 0, plumbing.ErrObjectNotFound
 	}
 
+	s.indexMut.RLock()
 	idx := s.index[pack]
+	s.indexMut.RUnlock()
 	hash, err := idx.FindHash(offset)
 	if err == nil {
 		obj, ok := s.objectCache.Get(hash)
@@ -315,7 +327,10 @@ func (s *ObjectStorage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (p
 	var obj plumbing.EncodedObject
 	var err error
 
-	if s.index != nil {
+	s.indexMut.RLock()
+	idx := s.index
+	s.indexMut.RUnlock()
+	if idx != nil {
 		obj, err = s.getFromPackfile(h, false)
 		if err == plumbing.ErrObjectNotFound {
 			obj, err = s.getFromUnpacked(h)
@@ -439,7 +454,9 @@ func (s *ObjectStorage) getFromPackfile(h plumbing.Hash, canBeDelta bool) (
 		return nil, plumbing.ErrObjectNotFound
 	}
 
+	s.indexMut.RLock()
 	idx := s.index[pack]
+	s.indexMut.RUnlock()
 	p, err := s.packfile(idx, pack)
 	if err != nil {
 		return nil, err
@@ -460,8 +477,8 @@ func (s *ObjectStorage) decodeObjectAt(
 	p *packfile.Packfile,
 	offset int64,
 ) (plumbing.EncodedObject, error) {
-		s.mut.Lock()
-		defer s.mut.Unlock()
+	s.mut.Lock()
+	defer s.mut.Unlock()
 	hash, err := p.FindHash(offset)
 	if err == nil {
 		obj, ok := s.objectCache.Get(hash)
@@ -521,12 +538,14 @@ func (s *ObjectStorage) decodeDeltaObjectAt(
 func (s *ObjectStorage) findObjectInPackfile(h plumbing.Hash) (plumbing.Hash, plumbing.Hash, int64) {
 	s.mut.Lock()
 	defer s.mut.Unlock()
+	s.indexMut.RLock()
 	for packfile, index := range s.index {
 		offset, err := index.FindOffset(h)
 		if err == nil {
 			return packfile, h, offset
 		}
 	}
+	s.indexMut.RUnlock()
 
 	return plumbing.ZeroHash, plumbing.ZeroHash, -1
 }
@@ -539,6 +558,8 @@ func (s *ObjectStorage) HashesWithPrefix(prefix []byte) ([]plumbing.Hash, error)
 
 	// TODO: This could be faster with some idxfile changes,
 	// or diving into the packfile.
+	s.indexMut.RLock()
+	defer s.indexMut.RUnlock()
 	for _, index := range s.index {
 		ei, err := index.Entries()
 		if err != nil {
@@ -604,6 +625,8 @@ func (s *ObjectStorage) buildPackfileIters(
 			if err != nil {
 				return nil, err
 			}
+			s.indexMut.RLock()
+			defer s.indexMut.RUnlock()
 			return newPackfileIter(
 				s.dir.Fs(), pack, t, seen, s.index[h],
 				s.objectCache, s.options.KeepDescriptors,

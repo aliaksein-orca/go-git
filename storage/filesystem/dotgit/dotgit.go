@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-billy/v5/osfs"
@@ -89,6 +90,7 @@ type DotGit struct {
 	// incoming object directory information
 	incomingChecked bool
 	incomingDirName string
+	incomingProtect sync.Mutex
 
 	objectList []plumbing.Hash // sorted
 	objectMap  map[plumbing.Hash]struct{}
@@ -563,7 +565,8 @@ func (d *DotGit) objectPath(h plumbing.Hash) string {
 //
 // More on git hooks found here : https://git-scm.com/docs/githooks
 // More on 'quarantine'/incoming directory here:
-//     https://git-scm.com/docs/git-receive-pack
+//
+//	https://git-scm.com/docs/git-receive-pack
 func (d *DotGit) incomingObjectPath(h plumbing.Hash) string {
 	hString := h.String()
 
@@ -577,6 +580,8 @@ func (d *DotGit) incomingObjectPath(h plumbing.Hash) string {
 // hasIncomingObjects searches for an incoming directory and keeps its name
 // so it doesn't have to be found each time an object is accessed.
 func (d *DotGit) hasIncomingObjects() bool {
+	d.incomingProtect.Lock()
+	defer d.incomingProtect.Unlock()
 	if !d.incomingChecked {
 		directoryContents, err := d.fs.ReadDir(objectsPath)
 		if err == nil {
